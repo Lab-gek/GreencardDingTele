@@ -7,7 +7,7 @@ serial:
   timeout: 2                  # Serial read timeout in seconds
 
 influxdb:
-  url: "http://localhost:8086"
+  url: "http://influxdb:8086"       # Docker service name (use localhost:8086 outside Docker)
   token: "telemetry-super-secret-token"
   org: "telemetry"
   bucket: "telemetry"
