@@ -1,0 +1,14 @@
+# Server configuration for the LoRa telemetry ingestion script
+
+serial:
+  port: "/dev/ttyUSB0"        # Serial port of the LoRa gateway (Linux)
+  # port: "COM3"              # Uncomment for Windows
+  baudrate: 115200
+  timeout: 2                  # Serial read timeout in seconds
+
+influxdb:
+  url: "http://localhost:8086"
+  token: "telemetry-super-secret-token"
+  org: "telemetry"
+  bucket: "telemetry"
+  measurement: "telemetry"

@@ -1,0 +1,16 @@
+# Grafana datasource provisioning — auto-registers InfluxDB on first start
+apiVersion: 1
+
+datasources:
+  - name: InfluxDB
+    type: influxdb
+    access: proxy
+    url: http://influxdb:8086
+    jsonData:
+      version: Flux
+      organization: telemetry
+      defaultBucket: telemetry
+    secureJsonData:
+      token: telemetry-super-secret-token
+    isDefault: true
+    editable: true
