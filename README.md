@@ -1,24 +1,22 @@
 # GreencardDingTele — LoRa Telemetry System
 
 A complete telemetry pipeline that reads **temperature**, **RPM**, and
-**current (Amps)** on an ESP32, transmits the data over **LoRa**, and displays
-it in real-time on a **Grafana** dashboard backed by **InfluxDB**.
+**current (Amps)** on an ESP32, transmits the data over **LoRa** to a
+**USB LoRa receiver** on the server, and displays it in real-time on a
+**Grafana** dashboard backed by **InfluxDB**. The Python ingestion script
+reads raw binary packets directly from the receiver, validates CRC-8, and
+writes decoded telemetry to the database — no separate gateway
+microcontroller is needed.
 
 ```
-┌─────────────────────┐     LoRa 433 MHz     ┌──────────────────┐
-│  ESP32 Sender       │ ──────────────────▶   │  LoRa Gateway    │
-│  • NTC thermistor   │    11-byte binary     │  (Arduino/ESP32) │
-│  • HW-006 tracker   │    packets            │  USB serial      │
-│  • ACS712 current   │                       │  → JSON lines    │
-│  • SX1276/SX1278    │                       │                  │
-└─────────────────────┘                       └────────┬─────────┘
-                                                       │ serial
-                                              ┌────────▼─────────┐
-                                              │  Server (PC)     │
-                                              │  • ingest.py     │
-                                              │  • InfluxDB 2.x  │
-                                              │  • Grafana       │
-                                              └──────────────────┘
+┌─────────────────────┐     LoRa 433 MHz     ┌──────────────────────────┐
+│  ESP32 Sender       │ ──────────────────▶   │  Server (PC)             │
+│  • NTC thermistor   │    11-byte binary     │  • USB LoRa receiver     │
+│  • HW-006 tracker   │    packets            │  • ingest.py (binary →   │
+│  • ACS712 current   │                       │    CRC check → decode)   │
+│  • SX1276/SX1278    │                       │  • InfluxDB 2.x          │
+└─────────────────────┘                       │  • Grafana               │
+                                              └──────────────────────────┘
 ```
 
 ## Repository Structure
@@ -28,14 +26,12 @@ firmware/               ESP32 sender firmware (Arduino .ino)
   ├── config.h          Pin assignments, LoRa settings, calibration constants
   └── firmware.ino      Main sketch: read sensors → pack → transmit
 
-gateway/                LoRa receiver / serial forwarder
-  └── gateway.ino       Receive LoRa → validate CRC → output JSON over serial
-
 server/                 Server-side data pipeline
   ├── config.yaml       Serial port & InfluxDB connection settings
   ├── requirements.txt  Python dependencies
-  ├── ingest.py         Serial → InfluxDB bridge
-  ├── docker-compose.yml  InfluxDB + Grafana containers
+  ├── ingest.py         USB LoRa → binary decode → InfluxDB bridge
+  ├── Dockerfile        Container image for the ingest service
+  ├── docker-compose.yml  InfluxDB + Grafana + ingest containers
   └── grafana/
       └── provisioning/
           ├── datasources/influxdb.yml   Auto-configured datasource
@@ -57,7 +53,7 @@ docs/                   Documentation
 | NTC Thermistor | 10 kΩ @ 25 °C with a 10 kΩ series resistor |
 | HW-006 v1.3 | Line tracker sensor for RPM detection |
 | ACS712 | Hall-effect current sensor (5 A / 20 A / 30 A variant) |
-| Second Arduino/ESP32 | Gateway — same LoRa module, connected via USB |
+| USB LoRa Receiver | USB module with SX1276/SX1278, plugs into server PC |
 | Black tape | One or more strips on the rotating axle |
 
 See [docs/wiring.md](docs/wiring.md) for complete wiring diagrams.
@@ -72,14 +68,12 @@ See [docs/wiring.md](docs/wiring.md) for complete wiring diagrams.
 4. Edit `firmware/config.h` to match your pin wiring and NTC parameters.
 5. Upload.
 
-### 2. Flash the Gateway
+### 2. Connect the USB LoRa Receiver
 
-1. Open `gateway/gateway.ino` in the Arduino IDE.
-2. Same **LoRa** library is required.
-3. Select the correct board (ESP32 or Arduino Uno/Nano).
-4. Upload.
-5. Plug the gateway into the server PC via USB. Note the serial port
-   (e.g. `/dev/ttyUSB0` or `COM3`).
+1. Plug the USB LoRa receiver module into the server PC.
+2. Note the serial port (e.g. `/dev/ttyUSB0` or `COM3`).
+3. Ensure the receiver's LoRa frequency, spreading factor, and bandwidth
+   match the sender's settings in `firmware/config.h`.
 
 ### 3. Start the Server Stack
 
@@ -108,9 +102,7 @@ python ingest.py
   - RPM time-series graph
   - Current (Amps) time-series graph
   - Current temperature, RPM & Amps stat panels
-  - RSSI gauge (link quality)
   - Packets-lost counter
-  - RSSI over time
 
 ## Protocol
 
