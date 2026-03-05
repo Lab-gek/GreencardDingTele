@@ -90,24 +90,15 @@ Where:
 
 ---
 
-## Gateway (Arduino / ESP32 Receiver)
+## USB LoRa Receiver (Server Side)
 
-The gateway is a second board with the same LoRa module, connected to the
-server PC via USB.
+A USB LoRa receiver module is plugged directly into the server PC. It
+receives the binary packets from the ESP32 sender and exposes them on a
+serial port (e.g. `/dev/ttyUSB0`).
 
-### LoRa Module Wiring
+The `ingest.py` script reads raw bytes from this serial port, validates the
+CRC-8, decodes the packet, and writes the telemetry to InfluxDB — no
+separate gateway microcontroller is needed.
 
-Same pinout as the sender table above. If using an Arduino Uno/Nano instead
-of an ESP32, adjust SPI pins:
-
-| SX127x Pin | Arduino Uno | Arduino Nano |
-|------------|-------------|--------------|
-| SCK        | D13         | D13          |
-| MISO       | D12         | D12          |
-| MOSI       | D11         | D11          |
-| NSS (CS)   | D10         | D10          |
-| RST        | D9          | D9           |
-| DIO0       | D2          | D2           |
-
-The gateway's only other connection is USB to the server PC (serial at
-115 200 baud).
+> **Important**: Make sure the LoRa frequency, spreading factor, and
+> bandwidth on the USB receiver match the sender's settings in `config.h`.

@@ -1,9 +1,19 @@
 #!/usr/bin/env python3
 """
-ingest.py — Serial-to-InfluxDB ingestion bridge
+ingest.py — LoRa Binary Packet → InfluxDB ingestion bridge
 
-Reads JSON lines from the LoRa gateway's serial port and writes telemetry
-points to InfluxDB.  Handles reconnects for both serial and InfluxDB.
+Reads raw binary telemetry packets from a USB LoRa receiver module,
+validates CRC-8, decodes the fields, and writes telemetry points to InfluxDB.
+Handles reconnects for both serial and InfluxDB.
+
+Packet format (11 bytes):
+  [0]    0xAA header
+  [1]    device ID
+  [2-3]  sequence number  (uint16 LE)
+  [4-5]  temperature×100  (int16  LE)
+  [6-7]  RPM              (uint16 LE)
+  [8-9]  current×100      (int16  LE)
+  [10]   CRC-8/MAXIM over bytes 0-9
 
 Usage:
     python ingest.py                        # uses config.yaml in CWD
@@ -11,16 +21,18 @@ Usage:
 """
 
 import argparse
-import json
 import logging
-import sys
+import struct
 import time
-from pathlib import Path
 
 import serial
 import yaml
 from influxdb_client import InfluxDBClient, Point, WritePrecision
 from influxdb_client.client.write_api import SYNCHRONOUS
+
+# ── Constants ────────────────────────────────────────────────────────────────
+PACKET_HEADER = 0xAA
+PACKET_SIZE   = 11
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -29,6 +41,20 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 log = logging.getLogger("ingest")
+
+# ── CRC-8/MAXIM (identical to firmware) ──────────────────────────────────────
+
+def crc8(data: bytes) -> int:
+    """Compute CRC-8/MAXIM over the given bytes."""
+    crc = 0x00
+    for byte in data:
+        crc ^= byte
+        for _ in range(8):
+            if crc & 0x01:
+                crc = (crc >> 1) ^ 0x8C   # reflected polynomial 0x31
+            else:
+                crc >>= 1
+    return crc
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -68,49 +94,81 @@ def open_influx(cfg: dict):
     return client, write_api, cfg["bucket"], cfg["org"]
 
 
-def process_line(line: str, write_api, bucket: str, org: str, measurement: str):
-    """Parse one JSON line and write to InfluxDB if valid."""
-    try:
-        data = json.loads(line)
-    except json.JSONDecodeError:
-        log.warning("Invalid JSON: %s", line.strip())
-        return
+def read_packet(ser: serial.Serial) -> bytes | None:
+    """
+    Read from serial until the 0xAA header byte is found, then read the
+    remaining 10 bytes to form a complete 11-byte packet.
+    Returns the packet bytes or None on timeout / short read.
+    """
+    # Scan for header byte
+    while True:
+        b = ser.read(1)
+        if not b:
+            return None          # timeout
+        if b[0] == PACKET_HEADER:
+            break
 
-    # Skip non-data messages (status, errors)
-    if "error" in data:
-        log.warning("Gateway error: %s", data)
-        return
-    if "status" in data:
-        log.info("Gateway status: %s", data.get("status"))
-        return
+    # Read remaining bytes
+    rest = ser.read(PACKET_SIZE - 1)
+    if len(rest) < PACKET_SIZE - 1:
+        log.warning("Short read: got %d bytes after header", len(rest))
+        return None
 
-    # Extract fields
-    device_id = data.get("dev", 0)
-    seq       = data.get("seq", 0)
-    temp      = data.get("temp")
-    rpm       = data.get("rpm")
-    amps      = data.get("amps")
-    rssi      = data.get("rssi")
+    return b + rest
 
-    if temp is None or rpm is None:
-        log.warning("Incomplete data: %s", data)
-        return
 
-    # Build InfluxDB point
+def decode_packet(buf: bytes) -> dict | None:
+    """
+    Validate and decode an 11-byte binary packet.
+    Returns a dict with decoded fields or None on error.
+    """
+    if len(buf) != PACKET_SIZE:
+        log.warning("Bad packet size: %d", len(buf))
+        return None
+
+    if buf[0] != PACKET_HEADER:
+        log.warning("Bad header: 0x%02X (expected 0xAA)", buf[0])
+        return None
+
+    # CRC check over bytes 0-9
+    computed = crc8(buf[:10])
+    if computed != buf[10]:
+        log.warning("CRC mismatch: computed 0x%02X, got 0x%02X  raw=%s",
+                     computed, buf[10], buf.hex().upper())
+        return None
+
+    # Decode fields (little-endian)
+    #   B = uint8, H = uint16 LE, h = int16 LE
+    device_id = buf[1]
+    seq       = struct.unpack_from("<H", buf, 2)[0]
+    temp_raw  = struct.unpack_from("<h", buf, 4)[0]
+    rpm       = struct.unpack_from("<H", buf, 6)[0]
+    cur_raw   = struct.unpack_from("<h", buf, 8)[0]
+
+    return {
+        "dev":  device_id,
+        "seq":  seq,
+        "temp": temp_raw / 100.0,
+        "rpm":  rpm,
+        "amps": cur_raw / 100.0,
+    }
+
+
+def write_point(data: dict, write_api, bucket: str, org: str, measurement: str):
+    """Write a decoded telemetry dict to InfluxDB."""
     point = (
         Point(measurement)
-        .tag("device_id", str(device_id))
-        .field("temperature", float(temp))
-        .field("rpm", int(rpm))
-        .field("current", float(amps) if amps is not None else 0.0)
-        .field("rssi", int(rssi) if rssi is not None else 0)
-        .field("seq", int(seq))
+        .tag("device_id", str(data["dev"]))
+        .field("temperature", float(data["temp"]))
+        .field("rpm", int(data["rpm"]))
+        .field("current", float(data["amps"]))
+        .field("seq", int(data["seq"]))
         .time(time.time_ns(), WritePrecision.NS)
     )
-
     try:
         write_api.write(bucket=bucket, org=org, record=point)
-        log.debug("Written: dev=%s seq=%s temp=%.2f rpm=%d amps=%.2f", device_id, seq, temp, rpm, amps or 0)
+        log.debug("Written: dev=%s seq=%s temp=%.2f rpm=%d amps=%.2f",
+                  data["dev"], data["seq"], data["temp"], data["rpm"], data["amps"])
     except Exception as e:
         log.error("InfluxDB write failed: %s", e)
 
@@ -118,7 +176,7 @@ def process_line(line: str, write_api, bucket: str, org: str, measurement: str):
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="LoRa → InfluxDB ingestion")
+    parser = argparse.ArgumentParser(description="USB LoRa receiver → InfluxDB ingestion")
     parser.add_argument(
         "--config", default="config.yaml",
         help="Path to YAML config file (default: config.yaml)",
@@ -136,20 +194,23 @@ def main():
     # Open serial port (with retry)
     ser = open_serial(ser_cfg)
 
-    log.info("Ingestion running — reading from %s, writing to %s/%s",
+    log.info("Ingestion running — reading binary packets from %s, writing to %s/%s",
              ser_cfg["port"], db_cfg["url"], bucket)
 
     try:
         while True:
             try:
-                raw = ser.readline()
-                if not raw:
+                buf = read_packet(ser)
+                if buf is None:
                     continue
-                line = raw.decode("utf-8", errors="replace").strip()
-                if not line:
+
+                data = decode_packet(buf)
+                if data is None:
                     continue
-                log.info("RX: %s", line)
-                process_line(line, write_api, bucket, org, measurement)
+
+                log.info("RX: dev=%d seq=%d temp=%.2f°C rpm=%d amps=%.2fA",
+                         data["dev"], data["seq"], data["temp"], data["rpm"], data["amps"])
+                write_point(data, write_api, bucket, org, measurement)
 
             except serial.SerialException as e:
                 log.error("Serial error: %s — reconnecting", e)

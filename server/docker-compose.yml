@@ -1,6 +1,6 @@
 # docker-compose.yml — Full LoRa Telemetry Server Stack
 #
-# Services:  InfluxDB 2.x  +  Grafana  +  Ingest bridge (serial → InfluxDB)
+# Services:  InfluxDB 2.x  +  Grafana  +  Ingest bridge (USB LoRa → InfluxDB)
 #
 # Usage:
 #   cd server
@@ -9,7 +9,7 @@
 # Grafana:  http://localhost:3000  (admin / admin)
 # InfluxDB: http://localhost:8086  (admin / adminpassword)
 #
-# Note: The ingest service needs access to the gateway's serial port.
+# Note: The ingest service needs access to the USB LoRa receiver's serial port.
 #       Adjust the device path in the "devices" section below if needed.
 
 services:
