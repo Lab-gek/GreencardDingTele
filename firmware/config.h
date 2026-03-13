@@ -47,8 +47,8 @@
 //    ACS712-20A → 100 mV/A  (±20 A)
 //    ACS712-30A →  66 mV/A  (±30 A)
 #define ACS712_PIN        35       // ADC input (GPIO 35 — input-only on ESP32)
-#define ACS712_SENSITIVITY 0.185   // V/A — 185 mV/A for the 5 A variant
-#define ACS712_V_OFFSET   1.65     // Quiescent output voltage (3.3 V / 2)
+#define MIN_V             27
+#define MAX_V             42
                                    // If powered from 5 V via level-shift, use 2.5
 
 // ── Packet ──────────────────────────────────────────────────────────────────

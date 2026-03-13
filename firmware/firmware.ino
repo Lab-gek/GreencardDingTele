@@ -23,7 +23,8 @@ uint16_t seqNumber = 0;
 
 // Timestamp of last transmission
 unsigned long lastSendTime = 0;
-
+//to not read when it goes from the white to the black
+float rpm_read = false;
 // ── ISR: Count black-tape transitions ───────────────────────────────────────
 
 void IRAM_ATTR onTapeEdge() {
@@ -72,31 +73,25 @@ float readTemperature() {
 // ── RPM Calculation ─────────────────────────────────────────────────────────
 
 uint16_t computeRPM(unsigned long pulses, unsigned long elapsedMs) {
+    if (rpm_read == false){
     if (elapsedMs == 0) return 0;
 
     // RPM = (pulses / TAPE_SECTIONS) * (60000 / elapsedMs)
-    float rpm = ((float)pulses / TAPE_SECTIONS) * (60000.0 / elapsedMs);
-    if (rpm > 65535.0) rpm = 65535.0;   // clamp to uint16_t max
-    return (uint16_t)rpm;
+    float kmh = ((1/(elapsedMs / 1000)) * 2,19) * 3,6;
+    if (kmh > 65535.0) kmh = 65535.0;   // clamp to uint16_t max
+    rpm_read = true;
+    return (uint16_t)kmh;
+    }
+    if (rpm_read == true){
+        rpm_read = false;
+    }
 }
 
 // ── Current Reading (ACS712) ────────────────────────────────────────────────
 
 float readCurrent() {
-    // Take multiple samples and average for a stable reading
-    const int SAMPLES = 20;
-    long total = 0;
-    for (int i = 0; i < SAMPLES; i++) {
-        total += analogRead(ACS712_PIN);
-    }
-    float avgRaw = (float)total / SAMPLES;
 
-    // Convert ADC value to voltage:  V_out = raw * (V_REF / ADC_MAX)
-    float voltage = avgRaw * (V_REF / ADC_MAX);
-
-    // Apply Ohm's Law for the ACS712:
-    //   I = (V_out − V_offset) / Sensitivity
-    float current = (voltage - ACS712_V_OFFSET) / ACS712_SENSITIVITY;
+    float current = (meet_ding - MIN_V) / (MAX_V - MIN_V) * 100;
 
     return current;   // Amperes (positive = forward, negative = reverse)
 }
